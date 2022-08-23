@@ -57,7 +57,7 @@ class NoLeaderConfig:
     min_squad_players_for_kick: int = 3
     kick_grace_period_seconds: int = 120
     kick_message: str = (
-        "Chaque squad doit avoir un officier.\nVous avez échoué au avertissements précédents et avez été puni en conséquence."
+        "Chaque squad doit avoir un officier.\nVous avez échoué aux avertissements précédents et avez été puni en conséquence."
     )
     # roles: 'officer', 'antitank', 'automaticrifleman', 'assault', 'heavymachinegunner', 'support', 'sniper', 'spotter', 'rifleman', 'crewman', 'tankcommander', 'engineer', 'medic'
     immuned_roles: List[str] = field(default_factory=lambda: ["support", "sniper"])
