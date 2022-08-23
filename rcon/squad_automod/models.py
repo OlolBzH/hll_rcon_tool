@@ -49,7 +49,7 @@ class NoLeaderConfig:
     min_squad_players_for_punish: int = 3
     disable_punish_below_server_player_count: int = 60
     punish_message: str = (
-        "Chaque esquade doit avoir un officier.\nVous avez été puni par un robot.\n La prochaine vérification aura lieu automatiquement dans 60s."
+        "Chaque squad doit avoir un officier.\nVous avez été puni par un robot.\n La prochaine vérification aura lieu automatiquement dans 60s."
     )
 
     kick_after_max_punish: bool = False
@@ -57,7 +57,7 @@ class NoLeaderConfig:
     min_squad_players_for_kick: int = 3
     kick_grace_period_seconds: int = 120
     kick_message: str = (
-        "Chaque escaouade doit avoir un officier.\nVous avez échoué au avertissements précédents."
+        "Chaque squad doit avoir un officier.\nVous avez échoué au avertissements précédents et avez été puni en conséquence."
     )
     # roles: 'officer', 'antitank', 'automaticrifleman', 'assault', 'heavymachinegunner', 'support', 'sniper', 'spotter', 'rifleman', 'crewman', 'tankcommander', 'engineer', 'medic'
     immuned_roles: List[str] = field(default_factory=lambda: ["support", "sniper"])
