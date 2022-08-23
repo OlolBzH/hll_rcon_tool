@@ -34,22 +34,22 @@ class PunishStepState(Enum):
 
 @dataclass
 class NoLeaderConfig:
-    enabled: bool = False
+    enabled: bool = True
     dry_run: bool = True
     discord_webhook_url: str = ''
-    warn_message_header: str = "Warning squads must have an Officer.\nYou will be punished then kicked"
-    warn_message_footer: str = "Next check will happen automatically in 60s"
+    warn_message_header: str = "Attention : Chaque squad doit avoir un officier.\nVous allez être puni puis exclus."
+    warn_message_footer: str = "La prochaine vérification aura lieu automatiquement dans 60s."
     # Set to 0 to disable, -1 for infinite warnings (will never go to punishes)
-    number_of_warning: int = 2
+    number_of_warning: int = 3
     warning_interval_seconds: int = 60
 
     # Set to 0 to disable, -1 for infinite punish (will never go to kicks)
-    number_of_punish: int = 0
+    number_of_punish: int = 3
     punish_interval_seconds: int = 60
     min_squad_players_for_punish: int = 3
     disable_punish_below_server_player_count: int = 60
     punish_message: str = (
-        "Squads must have an officer.\nYou're being punished by a bot.\nNext check in 60seconds"
+        "Chaque esquade doit avoir un officier.\nVous avez été puni par un robot.\n La prochaine vérification aura lieu automatiquement dans 60s."
     )
 
     kick_after_max_punish: bool = False
@@ -57,11 +57,11 @@ class NoLeaderConfig:
     min_squad_players_for_kick: int = 3
     kick_grace_period_seconds: int = 120
     kick_message: str = (
-        "Squads must have an officer.\nYou failed to comply with the previous warnings."
+        "Chaque escaouade doit avoir un officier.\nVous avez échoué au avertissements précédents."
     )
     # roles: 'officer', 'antitank', 'automaticrifleman', 'assault', 'heavymachinegunner', 'support', 'sniper', 'spotter', 'rifleman', 'crewman', 'tankcommander', 'engineer', 'medic'
     immuned_roles: List[str] = field(default_factory=lambda: ["support", "sniper"])
-    immuned_level_up_to: int = 15
+    immuned_level_up_to: int = 1500
 
 
 @dataclass
