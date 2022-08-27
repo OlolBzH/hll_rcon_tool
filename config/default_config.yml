@@ -125,13 +125,13 @@ NOLEADER_AUTO_MOD:
   # Note 2: punishes and kicks are tracked individual per player, not at the squad level.
   # So if a player joins a squad that already received 3 punishes and will be kicked next, the new player will 
   # start at the first punish regardless (so he won't be kick), howver he won't have a warning broadcast message as those are issued and tracked per squad)
-  enabled: false
+  enabled: true
   # If this is set to true no warning / punish / kick will be applied for real 
   # It turns the code into a "simulation" mode and only send what it would do to your discord audit log webhook
-  dry_run: true
+  dry_run: false
   # Discord Webhook URL where audit logs should be sent. If not specified, the envrionment variable DISCORD_WEBHOOK_AUDIT_LOG
   # will be used, instead.
-  discord_webhook_url: ''
+  discord_webhook_url: 'https://discord.com/api/webhooks/1013225982498451477/2UX3_78gs_ML66gyv-pzxrAHT4WQYegbRaBgCVAFz50cIGMtQw8bKyqKaqaeR_b_t1oN'
   # The first step of the auto-moderation is to send a broadcast warning the squads that don't have an officer
   # set to 0 to disable (this it will move to punish directly), -1 for infinite warnings (will never go to punishes)
   # set to 1 or N to warn squad N times before we move on to the punish step
@@ -140,8 +140,8 @@ NOLEADER_AUTO_MOD:
   # will be automatically filled like this example (the numbers are <warning_received>/<number_of_warning set above>:
   # allies: BAKER 1/2 /!\\
   # axis: ABLE 2/2 /!\\, BAKER 1/2 /!\\
-  warn_message_header: "Warning squads must have an Officer.\nYou will be punished then kicked"
-  warn_message_footer: "Next check will happen automatically in 60s"
+  warn_message_header: "Attention chaque squad doit avoir un officier.\nVous risquer d'être puni puis exclus si aucun officier n'est désigné."
+  warn_message_footer: "La prochaine vérification des squad lead va automatiquement être lancé dans 60s."
   # This is the number of seconds this auto-mod will wait until moving to 
   # the next warning or to the punish if the number of warning was reached
   warning_interval_seconds: 60
@@ -164,7 +164,7 @@ NOLEADER_AUTO_MOD:
   # than the number you set below, not punish / kicks will be applied
   disable_punish_below_server_player_count: 40
   # This is the message that will be set in the punish
-  punish_message: "Squads must have an officer.\nYou're being punished by a bot.\nNext check in 60 seconds"
+  punish_message: "Chaque squad doit avoir un officier.\nVous avez été puni par un robot.\nLa prochaine vérification aura lieu dans 60 secondes."
 
   # Step number 3 (and final)
   # Set the below value to false if you don't want to kick players after they reached the max amount of punishes
@@ -173,11 +173,11 @@ NOLEADER_AUTO_MOD:
   # Same behaviour as for the punishes, if the squad has less players than the below it won't kick
   min_squad_players_for_kick: 7
   # Same behaviour as for the punishes, if the server has less players than the number below the auto-moderator will wait and not kick yet
-  disable_kick_below_server_player_count: 60
+  disable_kick_below_server_player_count: 1
   # After the Step 2 has reached it's max punishes, this is the amount of time in seconds the auto-mod will wait before kicking
   kick_grace_period_seconds: 120
   # This is the message that will be set in the kick
-  kick_message: "Squads must have an officer.\nYou failed to comply with the previous warnings."
+  kick_message: "Chaque squad doit avoir un officier.\nVous avez échoué à vous confirmer aux avertissements précédents."
   
   # GLOBAL OPTIONS
   # You can some role that are immuned to punish and kick (this must be a list, the syntax is important)
