@@ -56,6 +56,15 @@ NAME_KICKS:
   whitelist_flags:
     - ✅
 
+# You can test your regex there: https://regex101.com/ set it to "Python"
+LEVEL_KICKS:
+  min_level: 0
+  reason: "Your level is too low"
+  # If left unset, the webhook default to your audit log webhook
+  discord_webhook_url: ""
+  whitelist_flags:
+    - ✅
+
 BAN_TK_ON_CONNECT:
   enabled: no
   message: "Your first action on the server was a TEAM KILL you were banned as a result"
