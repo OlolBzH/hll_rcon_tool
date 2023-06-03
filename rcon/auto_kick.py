@@ -54,6 +54,7 @@ def auto_kick(_, log, name, steam_id_64):
 @on_connected
 @inject_player_ids
 def auto_kick_by_level(_, log, name, steam_id_64):
+    logger.info("Entering auto_kick_by_level hook")
     try:
         config = get_config().get("LEVEL_KICKS")
     except KeyError:
