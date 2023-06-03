@@ -62,7 +62,7 @@ def auto_kick_by_level(_, log, name, steam_id_64):
 
     minLevel = config["min_level"]
     try:
-        profile = RecordedRcon.get_detailed_player_info(name)
+        profile = recorded_rcon.get_player_info(name)
         for f in config.get("whitelist_flags", []):
             if player_has_flag(profile, f):
                 logger.debug(
