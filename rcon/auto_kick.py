@@ -58,13 +58,16 @@ def auto_kick_by_level(_, log, name, steam_id_64):
     try:
         config = get_config().get("LEVEL_KICKS")
     except KeyError:
-        logger.error("Invalid configuration file, LEVEL_KICKS key is missing")
+        logger.warning("Invalid configuration file, LEVEL_KICKS key is missing")
         return
 
     minLevel = config["min_level"]
+    playerLevel = 0
     try:
-        profile = recorded_rcon.get_detailed_player_info(name)
-        logger.info("player info content %s", profile)
+        player = recorded_rcon.get_detailed_player_info(name)
+        playerLevel = player.get('level')
+        
+        profile = get_player_profile(steam_id_64, 0)
         for f in config.get("whitelist_flags", []):
             if player_has_flag(profile, f):
                 logger.debug(
@@ -76,8 +79,8 @@ def auto_kick_by_level(_, log, name, steam_id_64):
     except:
         logger.exception("Unable to check player profile")
 
-    if profile.level < minLevel:
-        logger.info("player %s of level %i under level %i", name, profile.level, minLevel)
+    if playerLevel < minLevel:
+        logger.info("player %s of level %i under level %i", name, playerLevel, minLevel)
         recorded_rcon.do_kick(player=name, reason=config["reason"], by="LEVEL_KICK")
         try:
             send_to_discord_audit(

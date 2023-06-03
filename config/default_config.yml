@@ -56,10 +56,10 @@ NAME_KICKS:
   whitelist_flags:
     - ✅
 
-# You can test your regex there: https://regex101.com/ set it to "Python"
+# Automatically kick players under a given level
 LEVEL_KICKS:
   min_level: 0
-  reason: "Your level is too low"
+  reason: "Your level is too low for this server. Please come back when you will match the level threshold."
   # If left unset, the webhook default to your audit log webhook
   discord_webhook_url: ""
   whitelist_flags:
