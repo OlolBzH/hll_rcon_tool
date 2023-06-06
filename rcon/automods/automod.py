@@ -14,6 +14,7 @@ from rcon.automods.models import (
 )
 from rcon.automods.no_leader import NoLeaderAutomod
 from rcon.automods.seeding_rules import SeedingRulesAutomod
+from rcon.automods.level_thresholds import LevelThresholdsAutomod
 from rcon.cache_utils import get_redis_client
 from rcon.commands import CommandFailedError, HLLServerError
 from rcon.config import get_config
@@ -153,6 +154,7 @@ def enabled_moderators():
             [
                 NoLeaderAutomod(no_leader_config, red),
                 SeedingRulesAutomod(seeding_config, red),
+                LevelThresholdsAutomod(seeding_config, red),
             ],
         )
     )
