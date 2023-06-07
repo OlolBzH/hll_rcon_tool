@@ -19,28 +19,10 @@ from rcon.automods.models import (
     WatchStatus,
 )
 from rcon.automods.num_or_inf import num_or_inf
-from rcon.cache_utils import get_redis_client
-from rcon.extended_commands import StructuredLogLineType
-from rcon.game_logs import on_match_start
 from rcon.types import GameState
 
 LEVEL_THRESHOLDS_RESET_SECS = 120
 AUTOMOD_USERNAME = "LevelThresholdsAutomod"
-
-
-def disabled_rule_key(rule: str) -> str:
-    return f"level_thresholds_automod_disabled_for_round_{rule}"
-
-
-# @on_match_start
-# def on_map_change(_, _1):
-#     keys = []
-#     for rule in SEEDING_RULE_NAMES:
-#         keys.append(disabled_rule_key(rule))
-#     if len(keys) == 0:
-#         return
-#     get_redis_client().delete(*keys)
-
 
 class LevelThresholdsAutomod:
     logger: logging.Logger
@@ -79,87 +61,83 @@ class LevelThresholdsAutomod:
     def on_connected(self, name: str, steam_id_64: str) -> PunitionsToApply:
         p: PunitionsToApply = PunitionsToApply()
 
-        level_thresholds = set(self.config.level_thresholds.roles.items())
-
-        if len(level_thresholds) != 0:
+        if self.config.announce_level_thresholds.enabled:
             
-            
-            # minLevel = config["min_level"]
-            # maxLevel = config["max_level"]
-
-            # playerLevel = 0
-            # try:
-            #     player = recorded_rcon.get_detailed_player_info(name)
-            #     playerLevel = player.get('level')
-                
-            #     profile = get_player_profile(steam_id_64, 0)
-            #     for f in config.get("whitelist_flags", []):
-            #         if player_has_flag(profile, f):
-            #             logger.debug(
-            #                 "Not checking player level validity for whitelisted player %s (%s)",
-            #                 name,
-            #                 steam_id_64,
-            #             )
-            #             return
-            # except:
-            #     logger.exception("Unable to check player profile")
-
-            # if minLevel is not None and minLevel != 0 and playerLevel < minLevel:
-            #     logger.info("player %s of level %i under level %i", name, playerLevel, minLevel)
-            #     recorded_rcon.do_kick(player=name, reason=config["min_reason"], by="LEVEL_KICK")
-            #     try:
-            #         send_to_discord_audit(
-            #             f"`{name}` kicked from minimum level `{minLevel}`",
-            #             by="LEVEL_KICK",
-            #             webhookurl=config.get("discord_webhook_url"),
-            #         )
-            #     except Exception:
-            #         logger.error("Unable to send to audit_log")
-            #     return
-
-            # if maxLevel is not None and maxLevel != 0 and playerLevel > maxLevel:
-            #     logger.info("player %s of level %i over level %i", name, playerLevel, maxLevel)
-            #     recorded_rcon.do_kick(player=name, reason=config["max_reason"], by="LEVEL_KICK")
-            #     try:
-            #         send_to_discord_audit(
-            #             f"`{name}` kicked from maximum level `{maxLevel}`",
-            #             by="LEVEL_KICK",
-            #             webhookurl=config.get("discord_webhook_url"),
-            #         )
-            #     except Exception:
-            #         logger.error("Unable to send to audit_log")
-            #     return
-            
+            # Initialize messages to None
             data = {
-                "disallowed_roles": ", ".join(disallowed_roles),
-                "disallowed_roles_max_players": self.config.disallowed_roles.max_players,
-                "disallowed_weapons": ", ".join(disallowed_weapons),
-                "disallowed_weapons_max_players": self.config.disallowed_weapons.max_players,
+                "min_level_msg": None,
+                "max_level_msg": None,
+                "level_thresholds_msg": None,
             }
-            message = self.config.announce_seeding_active.message
-            try:
-                message = message.format(**data)
-            except KeyError:
-                self.logger.warning(
-                    f"The automod message for disallowed weapons ({message}) contains an invalid key"
-                )
+            
+            # Populate min_level message if configured
+            min_level = self.config.min_level
+            if min_level > 0:
+                message = self.config.min_level_message
+                try:
+                    message = message.format(level=min_level)
+                except KeyError:
+                    self.logger.warning(
+                        f"The automod message ({message}) contains an invalid key"
+                    )
+                data["min_level_msg"] = message
+            
+            # Populate max_level message if configured
+            max_level = self.config.max_level
+            if max_level > 0:
+                message = self.config.max_level_message
+                try:
+                    message = message.format(level=max_level)
+                except KeyError:
+                    self.logger.warning(
+                        f"The automod message ({message}) contains an invalid key"
+                    )
+                data["max_level_msg"] = message
 
-            p.warning.append(
-                PunishPlayer(
-                    steam_id_64=steam_id_64,
-                    name=name,
-                    squad="",
-                    team="",
-                    role="",
-                    lvl=0,
-                    details=PunishDetails(
-                        author=AUTOMOD_USERNAME,
-                        dry_run=False,
-                        discord_audit_url=self.config.discord_webhook_url,
-                        message=message,
-                    ),
+            # Populate level thresholds by role message id configured
+            lt = self.config.level_thresholds
+            message = lt.message
+            if len(lt.roles.keys()) > 0:
+                level_thresholds_msg = ""
+                for role in lt.roles:
+                    
+                    roleConfig = lt.roles.get(role)
+                    try:
+                        message = "  * " + message.format(role=roleConfig.label, level=roleConfig.min_level) + "\n"
+                    except KeyError:
+                        self.logger.warning(
+                            f"The automod message ({message}) contains an invalid key"
+                        )
+                    level_thresholds_msg.append(message)
+                data["level_thresholds_msg"] = level_thresholds_msg
+
+            # Format and send annoucement message with previous data if required
+            if data.get("min_level_msg") != None and data.get("max_level_msg") != None and data.get("level_thresholds_msg") != None:
+                
+                message = self.config.announce_level_thresholds.message
+                try:
+                    message = message.format(**data)
+                except KeyError:
+                    self.logger.warning(
+                        f"The automod message for disallowed weapons ({message}) contains an invalid key"
+                    )
+
+                p.warning.append(
+                    PunishPlayer(
+                        steam_id_64=steam_id_64,
+                        name=name,
+                        squad="",
+                        team="",
+                        role="",
+                        lvl=0,
+                        details=PunishDetails(
+                            author=AUTOMOD_USERNAME,
+                            dry_run=False,
+                            discord_audit_url=self.config.discord_webhook_url,
+                            message=message,
+                        ),
+                    )
                 )
-            )
 
         return p
 
@@ -266,11 +244,11 @@ class LevelThresholdsAutomod:
                     lt = self.config.level_thresholds
                     violations = []
                     if aplayer.role in lt.roles:
-                        role = lt.roles.get(aplayer.role)
-                        if role and aplayer.lvl < role.level:
+                        roleConfig = lt.roles.get(aplayer.role)
+                        if roleConfig and aplayer.lvl < roleConfig.min_level:
                             message = lt.message
                             try:
-                                message = message.format(role=role.label, level=role.level)
+                                message = message.format(role=roleConfig.label, level=roleConfig.min_level)
                             except KeyError:
                                 self.logger.warning(
                                     f"The automod message ({message}) contains an invalid key"

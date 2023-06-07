@@ -302,7 +302,7 @@ class PunitionsToApply:
 @dataclass
 class RoleLabelNLevel:
     label: str
-    level: int
+    min_level: int
 
 @dataclass
 class LevelByRoleConfig:
@@ -337,10 +337,15 @@ class LevelThresholdsConfig:
         "Your grace period of {kick_grace_period}s has passed.\n"
         "You failed to comply with the previous warnings."
     )
+    
+    announce_level_thresholds: AnnounceSeedingActiveConfig = field(
+        default_factory=AnnounceSeedingActiveConfig
+    )
 
     min_level: int = 0
-    max_level: int = 0
     min_level_message: str = "Access to this server is not allowed under level {level}"
+    
+    max_level: int = 0
     max_level_message: str = "Access to this server is not allowed over level {level}"
     
     level_thresholds: LevelByRoleConfig = field(
