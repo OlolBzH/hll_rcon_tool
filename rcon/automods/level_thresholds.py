@@ -60,22 +60,29 @@ class LevelThresholdsAutomod:
 
     def on_connected(self, name: str, steam_id_64: str) -> PunitionsToApply:
         p: PunitionsToApply = PunitionsToApply()
+        
+        min_level = self.config.min_level
+        max_level = self.config.max_level
+        lt = self.config.level_thresholds
 
-        if self.config.announce_level_thresholds.enabled:
+        if self.config.announce_level_thresholds.enabled and (
+            min_level > 0 or
+            max_level > 0 or
+            lt.roles is not None and len(lt.roles.keys()) > 0
+        ):
             
-            # Initialize messages to None
+            # Initialize messages to empty string
             data = {
-                "min_level_msg": None,
-                "max_level_msg": None,
-                "level_thresholds_msg": None,
+                "min_level_msg": "",
+                "max_level_msg": "",
+                "level_thresholds_msg": "",
             }
             
             # Populate min_level message if configured
-            min_level = self.config.min_level
             if min_level > 0:
                 message = self.config.min_level_message
                 try:
-                    message = message.format(level=min_level)
+                    message = message.format(level=min_level) + "\n"
                 except KeyError:
                     self.logger.warning(
                         f"The automod message ({message}) contains an invalid key"
@@ -83,11 +90,10 @@ class LevelThresholdsAutomod:
                 data["min_level_msg"] = message
             
             # Populate max_level message if configured
-            max_level = self.config.max_level
             if max_level > 0:
                 message = self.config.max_level_message
                 try:
-                    message = message.format(level=max_level)
+                    message = message.format(level=max_level) + "\n"
                 except KeyError:
                     self.logger.warning(
                         f"The automod message ({message}) contains an invalid key"
@@ -95,24 +101,25 @@ class LevelThresholdsAutomod:
                 data["max_level_msg"] = message
 
             # Populate level thresholds by role message id configured
-            lt = self.config.level_thresholds
-            message = lt.message
-            if len(lt.roles.keys()) > 0:
+            if lt.roles is not None and len(lt.roles.keys()) > 0:
                 level_thresholds_msg = ""
                 for role in lt.roles:
                     
+                    message = lt.message
                     roleConfig = lt.roles.get(role)
                     try:
-                        message = "  * " + message.format(role=roleConfig.label, level=roleConfig.min_level) + "\n"
+                        message = message.format(role=roleConfig.label, level=roleConfig.min_level) + "\n"
                     except KeyError:
                         self.logger.warning(
                             f"The automod message ({message}) contains an invalid key"
                         )
-                    level_thresholds_msg.append(message)
+                    level_thresholds_msg += message
                 data["level_thresholds_msg"] = level_thresholds_msg
 
+            self.logger.debug("ON_CONNECTED: generated messages %s", data)
+
             # Format and send annoucement message with previous data if required
-            if data.get("min_level_msg") != None and data.get("max_level_msg") != None and data.get("level_thresholds_msg") != None:
+            if data.get("min_level_msg") is not None or data.get("max_level_msg") is not None or data.get("level_thresholds_msg") is not None:
                 
                 message = self.config.announce_level_thresholds.message
                 try:
@@ -190,10 +197,6 @@ class LevelThresholdsAutomod:
             self.logger.info("Skipping None or empty squad %s %s", squad_name, squad)
             return punitions_to_apply
 
-        server_player_count = get_team_count(team_view, "allies") + get_team_count(
-            team_view, "axis"
-        )
-
         with self.watch_state(team, squad_name) as watch_status:
             if squad_name is None or squad is None:
                 raise NoLevelViolation()
@@ -215,6 +218,8 @@ class LevelThresholdsAutomod:
 
                 # Global exclusion to avoid "Level 1" HLL bug
                 if aplayer.lvl != 1:
+                    
+                    violations = []
                     
                     # Server min level threshold check
                     min_level = self.config.min_level
@@ -242,18 +247,18 @@ class LevelThresholdsAutomod:
 
                     # By role level thresholds check
                     lt = self.config.level_thresholds
-                    violations = []
-                    if aplayer.role in lt.roles:
-                        roleConfig = lt.roles.get(aplayer.role)
-                        if roleConfig and aplayer.lvl < roleConfig.min_level:
-                            message = lt.message
-                            try:
-                                message = message.format(role=roleConfig.label, level=roleConfig.min_level)
-                            except KeyError:
-                                self.logger.warning(
-                                    f"The automod message ({message}) contains an invalid key"
-                                )
-                            violations.append(message)
+                    if lt.roles is not None and len(lt.roles.keys()) > 0:
+                        if aplayer.role in lt.roles:
+                            roleConfig = lt.roles.get(aplayer.role)
+                            if roleConfig and aplayer.lvl < roleConfig.min_level:
+                                message = lt.message
+                                try:
+                                    message = message.format(role=roleConfig.label, level=roleConfig.min_level)
+                                except KeyError:
+                                    self.logger.warning(
+                                        f"The automod message ({message}) contains an invalid key"
+                                    )
+                                violations.append(message)
 
                 if len(violations) == 0:
                     continue

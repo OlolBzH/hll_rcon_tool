@@ -306,7 +306,7 @@ class RoleLabelNLevel:
 
 @dataclass
 class LevelByRoleConfig:
-    roles: Mapping[str, RoleLabelNLevel] = field(default_factory=dict)
+    roles: Mapping[str, RoleLabelNLevel] | None = field(default_factory=dict)
     message: str = "{role} is not allowed under level {level}"
         
 @dataclass
