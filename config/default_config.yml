@@ -396,8 +396,13 @@ LEVEL_AUTO_MOD:
   kick_grace_period_seconds: 120
   # This is the message that will be used in the kick
   # The following variables are available to fill into the text
-  #  {player_name}, {squad_name} and {kick_grace_period}
-  kick_message: "You violated level thresholds rules on this server.\nYour grace period of {kick_grace_period}s has passed.\nYou failed to comply with the previous warnings."
+  #  {player_name}, {squad_name}, {kick_grace_period} and {violation}
+  kick_message: "You violated level thresholds rules on this server: {violation}.\nYour grace period of {kick_grace_period}s has passed.\nYou failed to comply with the previous warnings."
+
+  # This is the message that will be used in the force kick when player does not match global level thresholds.
+  # The following variables are available to fill into the text
+  #  {player_name}, {squad_name} and {violation}
+  force_kick_message: "You violated level thresholds rules on this server: {violation}."
 
   # Announce that the server has managed level thresholds when at least one level thresholds rule is enabled. 
   # This message occurs only when a player connects to a server. 
@@ -422,7 +427,7 @@ LEVEL_AUTO_MOD:
     roles:
       armycommander: 
         label: Commander
-        min_level: 50
+        min_level: 250
       officer: 
         label: Officer
         min_level: 25
