@@ -35,6 +35,7 @@ services:
             RCONWEB_SERVER_URL: ${RCONWEB_SERVER_URL}
             PUBLIC_STATS_PORT: ${PUBLIC_STATS_PORT}
             PUBLIC_STATS_PORT_HTTPS: ${PUBLIC_STATS_PORT_HTTPS}
+            DOMAIN: ${DOMAIN}
         restart: always
         volumes: 
             - ./logs:/logs/

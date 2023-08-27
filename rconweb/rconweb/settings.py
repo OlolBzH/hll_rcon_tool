@@ -118,6 +118,10 @@ ALLOWED_HOSTS = [
     "localhost",
     "localhost:3000",
 ] + os.getenv("DOMAINS", "").split(",")
+
+SESSION_COOKIE_DOMAIN = "." + os.getenv("DOMAIN", "")
+DOMAIN_NAME = os.getenv("DOMAIN", "")
+
 CORS_ORIGIN_WHITELIST = ["http://{}".format(h) for h in ALLOWED_HOSTS if h] + [
     "https://{}".format(h) for h in ALLOWED_HOSTS if h
 ]
