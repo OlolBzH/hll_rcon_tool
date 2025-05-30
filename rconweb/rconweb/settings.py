@@ -9,26 +9,39 @@ https://docs.djangoproject.com/en/3.0/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/3.0/ref/settings/
 """
+
 import logging
 import os
 import re
 import socket
-from logging.config import dictConfig
+from subprocess import PIPE, run
 
 import sentry_sdk
-from django.utils.log import DEFAULT_LOGGING
 from sentry_sdk import configure_scope
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
 
-from rcon.extended_commands import Rcon
-from rcon.settings import SERVER_INFO
+from rcon.user_config.rcon_server_settings import RconServerSettingsUserConfig
 
 try:
-    ENVIRONMENT = re.sub(
-        "[^0-9a-zA-Z]+", "", (Rcon(SERVER_INFO).get_name() or "default").strip()
-    )[:64]
-except:
+    TAG_VERSION = (
+        run(["git", "describe", "--tags"], stdout=PIPE, stderr=PIPE)
+        .stdout.decode()
+        .strip()
+    )
+except Exception:
+    TAG_VERSION = "unknown"
+
+HLL_MAINTENANCE_CONTAINER = os.getenv("HLL_MAINTENANCE_CONTAINER")
+HLL_WH_SERVICE_CONTAINER = os.getenv("HLL_WH_SERVICE_CONTAINER")
+
+
+try:
+    config = RconServerSettingsUserConfig.load_from_db()
+    ENVIRONMENT = re.sub("[^0-9a-zA-Z]+", "", (config.short_name or "default").strip())[
+        :64
+    ]
+except Exception:
     ENVIRONMENT = "undefined"
 
 LOGGING = {
@@ -36,7 +49,7 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {
         "console": {
-            "format": f"[%(asctime)s][%(levelname)s][{ENVIRONMENT}] %(name)s "
+            "format": f"[%(asctime)s][%(levelname)s][{ENVIRONMENT}][{TAG_VERSION}] %(name)s "
             "%(filename)s:%(funcName)s:%(lineno)d | %(message)s",
         },
     },
@@ -96,6 +109,21 @@ with configure_scope() as scope:
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Needed for WS broadcasting functionality
+# See https://channels.readthedocs.io/en/stable/topics/channel_layers.html
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [
+                {
+                    "address": os.getenv("HLL_REDIS_URL"),
+                }
+            ],
+        },
+    },
+}
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/3.0/howto/deployment/checklist/
@@ -118,7 +146,7 @@ ALLOWED_HOSTS = [
     "localhost",
     "localhost:3000",
 ] + os.getenv("DOMAINS", "").split(",")
-CORS_ORIGIN_WHITELIST = ["http://{}".format(h) for h in ALLOWED_HOSTS if h] + [
+CORS_ALLOWED_ORIGINS = ["http://{}".format(h) for h in ALLOWED_HOSTS if h] + [
     "https://{}".format(h) for h in ALLOWED_HOSTS if h
 ]
 CORS_ALLOW_CREDENTIALS = True
@@ -129,12 +157,35 @@ CORS_ORIGIN_ALLOW_ALL = False
 SESSION_COOKIE_HTTPONLY = False
 CSRF_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_DOMAIN = os.getenv("SESSION_COOKIE_DOMAIN") or None
+CSRF_COOKIE_DOMAIN = os.getenv("CSRF_COOKIE_DOMAIN") or None
+
+# Required as of Django 4.0 otherwise it causes CSRF issues
+# if we don't include the origin
+CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS.copy()
+
+if not HLL_MAINTENANCE_CONTAINER and not HLL_WH_SERVICE_CONTAINER:
+    from rcon.user_config.rcon_server_settings import RconServerSettingsUserConfig
+
+    rcon_config = RconServerSettingsUserConfig.load_from_db()
+    if host := rcon_config.server_url:
+        host = str(host)
+        # Django doesn't like the trailing / in a URL
+        if host[-1] == "/":
+            CSRF_TRUSTED_ORIGINS.append(host[:-1])
+        else:
+            CSRF_TRUSTED_ORIGINS.append(host)
 
 if DEBUG:
+    # Chrome requires these to be set or it won't allow cookies to save between
+    # cross origin requests, by default in debug the backend runs on localhost:8000
+    #  and the frontend on localhost:3000 which are considered different domains
+    SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SAMESITE = "None"
     SESSION_COOKIE_SAMESITE = "None"
 
 INSTALLED_APPS = [
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -180,27 +231,30 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "rconweb.wsgi.application"
+ASGI_APPLICATION = "rconweb.asgi.application"
 
 
 # Database
 # https://docs.djangoproject.com/en/3.0/ref/settings/#databases
 
-from urllib.parse import urlparse
-
-db_info = urlparse(os.getenv("DB_URL"))
-
+db_info = {
+    "USER": os.getenv("HLL_DB_USER"),
+    "PASSWORD": os.getenv("HLL_DB_PASSWORD"),
+    "HOST": os.getenv("HLL_DB_HOST"),
+    "PORT": os.getenv("HLL_DB_HOST_PORT"),
+    "NAME": os.getenv("HLL_DB_NAME"),
+}
 
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "USER": db_info.username,
-        "PASSWORD": db_info.password,
-        "HOST": db_info.hostname,
-        "PORT": db_info.port,
-        "NAME": "rcon",
+        "USER": db_info["USER"],
+        "PASSWORD": db_info["PASSWORD"],
+        "HOST": db_info["HOST"],
+        "PORT": db_info["PORT"],
+        "NAME": db_info["NAME"],
     }
 }
-
 
 # Password validation
 # https://docs.djangoproject.com/en/3.0/ref/settings/#auth-password-validators
@@ -230,6 +284,7 @@ TIME_ZONE = "UTC"
 
 USE_I18N = True
 
+# Deprecated in Django 4.0, removed in Django 5.0
 USE_L10N = True
 
 USE_TZ = True
@@ -240,3 +295,4 @@ USE_TZ = True
 
 STATIC_URL = "/djangostatic/"
 STATIC_ROOT = "/static/"
+STATICFILES_DIRS = [os.path.join(BASE_DIR, "static")]

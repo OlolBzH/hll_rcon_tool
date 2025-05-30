@@ -1,35 +1,24 @@
-import datetime
 import logging
 import time
 
 from rcon.audit import ingame_mods, online_mods
-from rcon.cache_utils import get_redis_client
 from rcon.commands import CommandFailedError
-from rcon.extended_commands import CommandFailedError
-from rcon.recorded_commands import RecordedRcon
-from rcon.user_config import AutoVoteKickConfig, VoteMapConfig
-from rcon.utils import (
-    LONG_HUMAN_MAP_NAMES,
-    NO_MOD_LONG_HUMAN_MAP_NAMES,
-    NO_MOD_SHORT_HUMAN_MAP_NAMES,
-    SHORT_HUMAN_MAP_NAMES,
-    categorize_maps,
-    numbered_maps,
-)
-from rcon.vote_map import MapsRecorder, VoteMap
+from rcon.rcon import CommandFailedError, Rcon, get_rcon
+from rcon.user_config.auto_kick import AutoVoteKickUserConfig
+from rcon.vote_map import VoteMap
 
 logger = logging.getLogger(__name__)
 
 
-def toggle_votekick(rcon: RecordedRcon):
-    config = AutoVoteKickConfig()
+def toggle_votekick(rcon: Rcon):
+    config = AutoVoteKickUserConfig.load_from_db()
 
-    if not config.is_enabled():
+    if not config.enabled:
         return
 
-    condition_type = config.get_condition_type().upper()
-    min_online = config.get_min_online_mods()
-    min_ingame = config.get_min_ingame_mods()
+    condition_type = config.condition.upper()
+    min_online = config.minimum_online_mods
+    min_ingame = config.minimum_ingame_mods
     condition = all if condition_type == "AND" else any
     online_mods_ = online_mods()
     ingame_mods_ = ingame_mods(rcon)
@@ -51,9 +40,7 @@ def toggle_votekick(rcon: RecordedRcon):
 
 def run():
     max_fails = 5
-    from rcon.settings import SERVER_INFO
-
-    rcon = RecordedRcon(SERVER_INFO)
+    rcon = get_rcon()
 
     while True:
         try:

@@ -3,14 +3,18 @@ import logging
 import os
 import pickle
 from contextlib import contextmanager
+from typing import Callable
 
 import redis
+import redis.exceptions
 import simplejson
 from cachetools.func import ttl_cache as cachetools_ttl_cache
 
 logger = logging.getLogger(__name__)
 
 _REDIS_POOL = None
+# We use the redis database with db number 0 as a shared database amongst all the containers
+_GLOBAL_REDIS_POOL = None
 
 
 class RedisCached:
@@ -21,13 +25,24 @@ class RedisCached:
         pool,
         ttl_seconds,
         function,
+        function_cache_unavailable: Callable | None = None,
+        red: redis.StrictRedis | None = None,
         is_method=False,
         cache_falsy=True,
         serializer=simplejson.dumps,
         deserializer=simplejson.loads,
     ):
-        self.red = redis.Redis(connection_pool=pool)
+        # TODO: isinstance check ttl_seconds it must be an int
+        # not a float or anything else
+        if pool is None:
+            pool = get_redis_pool()
+
+        if red is None:
+            self.red = redis.Redis(connection_pool=pool)
+        else:
+            self.red = red
         self.function = function
+        self.function_cache_unavailable = function_cache_unavailable
         self.serializer = serializer
         self.deserializer = deserializer
         self.ttl_seconds = ttl_seconds
@@ -35,12 +50,12 @@ class RedisCached:
         self.cache_falsy = cache_falsy
 
     @staticmethod
-    def clear_all_caches(pool):
+    def clear_all_caches(pool) -> bool:
         red = redis.Redis(connection_pool=pool)
         keys = list(red.scan_iter(match=f"{RedisCached.PREFIX}*"))
         logger.warning("Wiping cached values %s", keys)
         if not keys:
-            return
+            return 0
         return red.delete(*keys)
 
     @property
@@ -66,17 +81,21 @@ class RedisCached:
     def __call__(self, *args, **kwargs):
         val = None
         key = self.key(*args, **kwargs)
+        func = self.function
         try:
             val = self.red.get(key)
-        except redis.exceptions.RedisError:
-            logger.exception("Unable to use cache")
+        except redis.exceptions.RedisError as e:
+            logger.exception("Unable to use cache: %s", e)
+            if self.function_cache_unavailable:
+                func = self.function_cache_unavailable
+                logger.error("Using fallback function due to cache failure: %s", func)
 
         if val is not None:
             # logger.debug("Cache HIT for %s", self.key(*args, **kwargs))
             return self.deserializer(val)
 
         # logger.debug("Cache MISS for %s", self.key(*args, **kwargs))
-        val = self.function(*args, **kwargs)
+        val = func(*args, **kwargs)
 
         if not val and not self.cache_falsy:
             logger.debug("Caching falsy result is disabled for %s", self.__name__)
@@ -117,9 +136,41 @@ class RedisCached:
         #   logger.debug("Cache CLEARED for %s", keys)
 
 
-def get_redis_pool(decode_responses=True):
+def construct_redis_url(db_number: int = 0) -> str:
+    """Allow overriding the database number when creating a redis instance"""
+    host = os.getenv("HLL_REDIS_HOST")
+    port = os.getenv("HLL_REDIS_PORT")
+
+    if not host or not port:
+        raise ValueError(f"HLL_REDIS_HOST and HLL_REDIS_PORT must be set")
+
+    return f"redis://{host}:{port}/{db_number}"
+
+
+def get_global_redis_pool(redis_url: str | None = None, decode_responses=True):
+    global _GLOBAL_REDIS_POOL
+    if redis_url is None:
+        redis_url = construct_redis_url(db_number=0)
+    if not redis_url:
+        return None
+
+    if _GLOBAL_REDIS_POOL is None:
+        logger.info("Global Redis pool initializing")
+        _GLOBAL_REDIS_POOL = redis.ConnectionPool.from_url(
+            redis_url,
+            max_connections=1000,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+            decode_responses=decode_responses,
+        )
+
+    return _GLOBAL_REDIS_POOL
+
+
+def get_redis_pool(redis_url: str | None = None, decode_responses=True):
     global _REDIS_POOL
-    redis_url = os.getenv("REDIS_URL")
+    if redis_url is None:
+        redis_url = os.getenv("HLL_REDIS_URL")
     if not redis_url:
         return None
 
@@ -136,22 +187,47 @@ def get_redis_pool(decode_responses=True):
     return _REDIS_POOL
 
 
-def get_redis_client(decode_responses=True):
-    pool = get_redis_pool(decode_responses)
+def get_redis_client(
+    redis_url: str | None = None, decode_responses=True, global_pool: bool = False
+):
+    if global_pool:
+        pool = get_global_redis_pool(
+            redis_url=redis_url, decode_responses=decode_responses
+        )
+    else:
+        pool = get_redis_pool(redis_url=redis_url, decode_responses=decode_responses)
     return redis.Redis(connection_pool=pool)
 
 
-def ttl_cache(ttl, *args, is_method=True, cache_falsy=True, **kwargs):
+def ttl_cache(
+    ttl,
+    *args,
+    is_method=True,
+    cache_falsy=True,
+    function_cache_unavailable=None,
+    **kwargs,
+):
     pool = get_redis_pool(decode_responses=False)
-    if not pool:
-        logger.debug("REDIS_URL is not set falling back to memory cache")
+    # Allow use of in memory cache and not redis when running tests
+    # but still use redis when running the development web server
+    if os.getenv("DEBUG") and not pool:
+        logger.warning(f"Unable to connect to Redis, using memory cache")
         return cachetools_ttl_cache(*args, ttl=ttl, **kwargs)
+    # the maintenance container does not use the redis cache but this method is imported
+    # and it will fail if it can't connect to redis otherwise
+    elif os.getenv("HLL_MAINTENANCE_CONTAINER") and not pool:
+        # skip logging but still use the in memory cache tools to allow importing
+        return cachetools_ttl_cache(*args, ttl=ttl, **kwargs)
+    if not pool:
+        logger.error("Unable to connect to Redis")
+        raise ConnectionError("Unable to connect to Redis")
 
     def decorator(func):
         cached_func = RedisCached(
             pool,
             ttl,
             function=func,
+            function_cache_unavailable=function_cache_unavailable,
             is_method=is_method,
             cache_falsy=cache_falsy,
             serializer=pickle.dumps,

@@ -1,5 +1,4 @@
-import { Grid } from "@material-ui/core";
-import React from "react";
+import Grid from "@mui/material/Grid2";
 import { WithPopver } from "../../commonComponent";
 import moment from "moment";
 import { List } from "immutable";
@@ -18,8 +17,8 @@ export const Penalites = ({ player }) => (
   <div>
     {player.get("received_actions", new List()).size < 1 ? "Clean record" : ""}
     {player.get("received_actions", new List()).map((action) => (
-      <p>{`${action.get("action_type")} ${moment(action.get("time")).format(
-        "LLL"
+      <p>{`${action.get("action_type")} ${moment.utc(action.get("time")).local().format(
+        "ddd Do MMM HH:mm:ss"
       )}: ${truncateString(action.get("reason"), 50)} by ${action.get(
         "by"
       )}`}</p>
@@ -27,11 +26,10 @@ export const Penalites = ({ player }) => (
   </div>
 );
 
-export const PlayerPenalties = ({ classes, player }) => (
+export const PlayerPenalties = ({ player }) => (
   <Grid container>
-    <Grid item xs={12} className={classes.paddingBottom}>
+    <Grid size={12}>
       <WithPopver
-        classes={classes}
         popoverContent={<Penalites player={player} />}
       >
         <small>

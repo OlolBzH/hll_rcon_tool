@@ -2,15 +2,19 @@ import logging
 from dataclasses import field
 from datetime import datetime
 from enum import Enum, auto
-from typing import List, Mapping, TypedDict
+from typing import List, Mapping, Optional, TypedDict
 
-from pydantic import validator
+from pydantic import HttpUrl
 from pydantic.dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 
 class SquadHasLeader(Exception):
+    pass
+
+
+class NoSoloTanker(Exception):
     pass
 
 
@@ -21,12 +25,15 @@ class SquadCycleOver(Exception):
 class NoSeedingViolation(Exception):
     pass
 
+
 class NoLevelViolation(Exception):
     pass
+
 
 class OffensiveDefensiveState(TypedDict):
     offensive_points: int
     defensive_points: int
+
 
 @dataclass
 class WatchStatus:
@@ -53,176 +60,28 @@ class ActionMethod(Enum):
 
 
 @dataclass
-class NoLeaderConfig:
-    enabled: bool = False
-    dry_run: bool = True
-    discord_webhook_url: str = ""
-
-    number_of_notes: int = 1
-    notes_interval_seconds: int = 10
-
-    warning_message: str = (
-        "Warning, {player_name}! Your squad ({squad_name}) does not have an officer. "
-        "Players of squads without an officer will be punished after {max_warnings} warnings "
-        "(you already received {received_warnings}), then kicked.\n"
-        "Next check will happen automatically in {next_check_seconds}s."
-    )
-    # Set to 0 to disable, -1 for infinite warnings (will never go to punishes)
-    number_of_warning: int = 2
-    warning_interval_seconds: int = 60
-
-    # Set to 0 to disable, -1 for infinite punish (will never go to kicks)
-    number_of_punish: int = 0
-    punish_interval_seconds: int = 60
-    min_squad_players_for_punish: int = 3
-    disable_punish_below_server_player_count: int = 60
-    punish_message: str = (
-        "Your squad ({squad_name}) must have an officer.\n"
-        "You're being punished by a bot ({received_punishes}/{max_punishes}).\n"
-        "Next check in {next_check_seconds} seconds"
-    )
-
-    kick_after_max_punish: bool = False
-    disable_kick_below_server_player_count: int = 60
-    min_squad_players_for_kick: int = 3
-    kick_grace_period_seconds: int = 120
-    kick_message: str = (
-        "Your squad ({squad_name}) must have an officer.\n"
-        "Your grace period of {kick_grace_period}s has passed.\n"
-        "You failed to comply with the previous warnings."
-    )
-    immuned_roles: List[str] = field(default_factory=lambda: ["support", "sniper"])
-    immuned_level_up_to: int = 15
-
-    # this value is not used in automod
-    # but required to succesfully parse the yml data to a pydanctic.dataclass
-    whitespace_names_message: str = ""
-
-    @validator("immuned_roles")
-    def validate_roles(cls, v: List[str]):
-        return valid_roles(v)
-
-
-EXISTING_ROLES = {
-    "officer",
-    "antitank",
-    "automaticrifleman",
-    "assault",
-    "heavymachinegunner",
-    "support",
-    "sniper",
-    "spotter",
-    "rifleman",
-    "crewman",
-    "tankcommander",
-    "engineer",
-    "medic",
-}
-
-
-def valid_roles(o: List[str]) -> List[str]:
-    non_existing_roles = list(set(o) - EXISTING_ROLES)
-    if len(non_existing_roles) != 0:
-        raise ValueError(
-            "following roles are unknown: " + ", ".join(non_existing_roles)
-        )
-    return o
-
-
-@dataclass
-class DisallowedRolesConfig:
-    min_players: int = 0
-    max_players: int = 0
-    roles: Mapping[str, str] = field(default_factory=dict)
-    message: str = "{role} is not allowed when server is seeding"
-
-    @validator("roles")
-    def validate_roles(cls, v: Mapping[str, str]):
-        valid_roles(list(v.keys()))
-        return v
-
-
-@dataclass
-class DisallowedWeaponConfig:
-    min_players: int = 0
-    max_players: int = 0
-    weapons: Mapping[str, str] = field(default_factory=dict)
-    message: str = "{weapon} is not allowed when server is seeding"
-
-
-@dataclass
-class EnforceCapFightConfig:
-    min_players: int = 0
-    max_players: int = 0
-    max_caps: int = 3
-    skip_warning: bool = False
-    message: str = ""
-
-
-@dataclass
-class AnnounceSeedingActiveConfig:
-    enabled: bool = False
-    message: str = ""
-
-
-@dataclass
-class SeedingRulesConfig:
-    enabled: bool = False
-    discord_webhook_url: str = ""
-
-    warning_message: str = (
-        "Warning, {player_name}! You violate seeding rules on this server: {violation}\n"
-        "You will be punished after {max_warnings} warnings (you already received {received_warnings}), "
-        "then kicked.\nNext check will happen automatically in {next_check_seconds}s."
-    )
-    number_of_warning: int = 2
-    warning_interval_seconds: int = 60
-
-    number_of_punish: int = 0
-    punish_interval_seconds: int = 60
-    punish_message: str = (
-        "You violated seeding rules on this server.\n"
-        "You're being punished by a bot ({received_punishes}/{max_punishes}).\n"
-        "Next check in {next_check_seconds} seconds"
-    )
-
-    kick_after_max_punish: bool = False
-    kick_grace_period_seconds: int = 120
-    kick_message: str = (
-        "You violated seeding rules on this server.\n"
-        "Your grace period of {kick_grace_period}s has passed.\n"
-        "You failed to comply with the previous warnings."
-    )
-
-    announce_seeding_active: AnnounceSeedingActiveConfig = field(
-        default_factory=AnnounceSeedingActiveConfig
-    )
-
-    disallowed_roles: DisallowedRolesConfig = field(
-        default_factory=DisallowedRolesConfig
-    )
-    disallowed_weapons: DisallowedWeaponConfig = field(
-        default_factory=DisallowedWeaponConfig
-    )
-    enforce_cap_fight: EnforceCapFightConfig = field(
-        default_factory=EnforceCapFightConfig
-    )
-
-
-@dataclass
 class PunishDetails:
     author: str
     message: str = ""
-    discord_audit_url: str = field(repr=False, default=None)
+    discord_audit_url: Optional[HttpUrl] = field(repr=False, default=None)
     dry_run: bool = False
 
 
 @dataclass
+class Flag:
+    id: int
+    flag: str
+    comment: Optional[str]
+    modified: datetime
+
+
+@dataclass
 class PunishPlayer:
-    steam_id_64: str
+    player_id: str
     name: str
     squad: str
     team: str
+    flags: List[Flag] = field(default_factory=list)
     role: str = None
     lvl: int = None
     details: PunishDetails = None
@@ -230,7 +89,7 @@ class PunishPlayer:
     def short_repr(self):
         return (
             f"{self.__class__.__name__}"
-            f"(name={self.name}, lvl={self.lvl}, role={self.role})"
+            f"(name={self.name}, lvl={self.lvl}, role={self.role}, flags={self.flags})"
         )
 
 
@@ -252,22 +111,23 @@ class PunitionsToApply:
         try:
             if any(s.team == team and s.name == squad_name for s in self.squads_state):
                 return
-            self.squads_state.append(
-                ASquad(
-                    team=team,
-                    name=squad_name,
-                    players=[
-                        PunishPlayer(
-                            steam_id_64=p.get("steam_id_64"),
-                            name=p.get("name"),
-                            squad=p.get("unit_name"),
-                            team=p.get("team"),
-                            role=p.get("role"),
-                            lvl=p.get("level"),
-                        )
-                        for p in squad.get("players", [])
-                    ],
+
+            players = []
+            for player in squad.get("players", []):
+                profile = player.get("profile", {})
+                punish_player = PunishPlayer(
+                    player_id=player.get("player_id"),
+                    name=player.get("name"),
+                    squad=player.get("unit_name"),
+                    team=player.get("team"),
+                    flags=profile.get("flags") if profile else [],
+                    role=player.get("role"),
+                    lvl=player.get("level"),
                 )
+                players.append(punish_player)
+
+            self.squads_state.append(
+                ASquad(team=team, name=squad_name, players=players)
             )
         except:
             logger.exception("Unable to add squad info")
@@ -276,10 +136,10 @@ class PunitionsToApply:
         if len(o.warning) != 0:
             self.warning.extend(o.warning)
         for p in o.punish:
-            if not any(sp.steam_id_64 == p.steam_id_64 for sp in self.punish):
+            if not any(sp.player_id == p.player_id for sp in self.punish):
                 self.punish.append(p)
         for k in o.kick:
-            if not any(sk.steam_id_64 == k.steam_id_64 for sk in self.kick):
+            if not any(sk.player_id == k.player_id for sk in self.kick):
                 self.kick.append(k)
         for s in o.squads_state:
             if any(s.team == ss.team and s.name == ss.name for ss in self.squads_state):
@@ -300,61 +160,3 @@ class PunitionsToApply:
                 self.kick,
             ]
         )
-@dataclass
-class RoleLabelNLevel:
-    label: str
-    min_level: int
-    min_players: int
-
-@dataclass
-class LevelByRoleConfig:
-    roles: Mapping[str, RoleLabelNLevel] | None = field(default_factory=dict)
-    message: str = "{role} is not allowed under level {level}"
-        
-@dataclass
-class LevelThresholdsConfig:
-    enabled: bool = False
-    discord_webhook_url: str = ""
-
-    warning_message: str = (
-        "Warning, {player_name}! You violate level thresholds rules on this server: {violation}\n"
-        "You will be punished after {max_warnings} warnings (you already received {received_warnings}), "
-        "then kicked.\nNext check will happen automatically in {next_check_seconds}s."
-    )
-    number_of_warning: int = 2
-    warning_interval_seconds: int = 60
-
-    number_of_punish: int = 0
-    punish_interval_seconds: int = 60
-    punish_message: str = (
-        "You violated level thresholds rules on this server.\n"
-        "You're being punished by a bot ({received_punishes}/{max_punishes}).\n"
-        "Next check in {next_check_seconds} seconds"
-    )
-
-    kick_after_max_punish: bool = False
-    kick_grace_period_seconds: int = 120
-    kick_message: str = (
-        "You violated level thresholds rules on this server.\n"
-        "Your grace period of {kick_grace_period}s has passed.\n"
-        "You failed to comply with the previous warnings."
-    )
-    
-    force_kick_message: str = (
-        "You violated level thresholds rules on this server: {violation}."
-    )
-    
-    announce_level_thresholds: AnnounceSeedingActiveConfig = field(
-        default_factory=AnnounceSeedingActiveConfig
-    )
-
-    min_level: int = 0
-    min_level_message: str = "Access to this server is not allowed under level {level}"
-    
-    max_level: int = 0
-    max_level_message: str = "Access to this server is not allowed over level {level}"
-    
-    level_thresholds: LevelByRoleConfig = field(
-        default_factory=LevelByRoleConfig
-    )
-

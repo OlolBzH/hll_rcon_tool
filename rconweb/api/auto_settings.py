@@ -3,13 +3,15 @@ import os
 
 from django.views.decorators.csrf import csrf_exempt
 
-from rcon.user_config import AutoSettingsConfig
+from rcon.user_config.auto_settings import AutoSettingsConfig
 
-from .audit_log import auto_record_audit, record_audit
+from .audit_log import record_audit
 from .auth import api_response, login_required
+from .decorators import permission_required, require_content_type, require_http_methods
 from .multi_servers import forward_request
 from .services import get_supervisor_client
 from .utils import _get_data
+from .views import audit
 
 AUTO_SETTINGS_KEY_ORDER = [
     "always_apply_defaults",
@@ -24,7 +26,9 @@ AUTO_SETTINGS_KEY_INDEX_MAP = {v: i for i, v in enumerate(AUTO_SETTINGS_KEY_ORDE
 
 
 @csrf_exempt
-@login_required(True)
+@login_required()
+@permission_required("api.can_view_auto_settings", raise_exception=True)
+@require_http_methods(["GET"])
 def get_auto_settings(request):
     data = _get_data(request)
     try:
@@ -52,9 +56,13 @@ def get_auto_settings(request):
 
 
 @csrf_exempt
-@login_required(True)
+@login_required()
+@permission_required("api.can_change_auto_settings", raise_exception=True)
 @record_audit
+@require_http_methods(["POST"])
+@require_content_type()
 def set_auto_settings(request):
+    command_name = "set_auto_settings"
     data = _get_data(request)
     try:
         server_number = int(data.get("server_number", os.getenv("SERVER_NUMBER")))
@@ -62,18 +70,33 @@ def set_auto_settings(request):
         return api_response(error="Invalid server number", failed=True, status_code=400)
     do_restart_service = data.get("restart_service", True)
     do_forward = data.get("forward", False)
+    if do_forward == "false" or do_forward == "0":
+        do_forward = False
+    if do_forward == "true" or do_forward == "1":
+        do_forward = True
+    if not isinstance(do_forward, bool):
+        return api_response(error="forward needs to be a boolean value or empty", failed=True, status_code=400)
 
     settings = data.get("settings")
     if not settings:
-        return api_response(
-            error="No auto settings provided", command="set_auto_settings"
-        )
+        return api_response(error="No auto settings provided", command=command_name)
 
     try:
         # Check if valid JSON
         settings = json.loads(settings)
     except json.JSONDecodeError:
-        return api_response(error="No valid JSON provided", command="set_auto_settings")
+        return api_response(error="No valid JSON provided", command=command_name)
+
+    audit(
+        func_name=command_name,
+        request=request,
+        arguments={
+            "server_number": server_number,
+            "restart_service": do_restart_service,
+            "forward": do_forward,
+            "settings": json.dumps(settings),
+        },
+    )
 
     config = AutoSettingsConfig()
     config.set_settings(settings)
@@ -90,7 +113,7 @@ def set_auto_settings(request):
 
     return api_response(
         result=settings,
-        command="set_auto_settings",
+        command=command_name,
         arguments=dict(server_number=server_number, restart_service=do_restart_service),
         failed=False,
     )

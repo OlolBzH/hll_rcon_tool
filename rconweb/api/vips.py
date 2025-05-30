@@ -11,15 +11,17 @@ from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 
 from rcon.commands import CommandFailedError
-from rcon.discord import dict_to_discord, send_to_discord_audit
-from rcon.models import PlayerSteamID, PlayerVIP, enter_session
-from rcon.user_config import RealVipConfig
+from rcon.discord import send_to_discord_audit
+from rcon.models import PlayerID, PlayerVIP, enter_session
+from rcon.steam_utils import is_steam_id_64
 from rcon.utils import get_server_number
+from rcon.win_store_utils import is_windows_store_id
 from rcon.workers import get_job_results, worker_bulk_vip
 
-from .audit_log import auto_record_audit, record_audit
+from .audit_log import record_audit
 from .auth import api_response, login_required
-from .views import _get_data, ctl
+from .decorators import permission_required, require_content_type, require_http_methods
+from .views import rcon_api
 
 logger = logging.getLogger("rconweb")
 
@@ -29,72 +31,29 @@ class DocumentForm(forms.Form):
 
 
 @csrf_exempt
-@login_required(True)
+@login_required()
+@permission_required("api.can_upload_vip_list", raise_exception=True)
 @record_audit
+@require_http_methods(["POST"])
+@require_content_type(["multipart/form-data"])
 def upload_vips(request):
-    message = "Upload a VIP file!"
-    send_to_discord_audit("upload_vips", request.user.username)
-    # Handle file upload
-    if request.method == "POST":
-        form = DocumentForm(request.POST, request.FILES)
-        if form.is_valid():
-            message = ""
-            vips = ctl.get_vip_ids()
-            for vip in vips:
-                ctl.do_remove_vip(vip["steam_id_64"])
-            message = f"{len(vips)} removed\n"
-            count = 0
-            for name, data in request.FILES.items():
-                if name.endswith(".json"):
-                    message = "JSON is not handled yet"
-                    break
-                else:
-                    for l in data:
-                        try:
-                            l = l.decode()
-                            steam_id, name = l.split(" ", 1)
-                            if len(steam_id) != 17:
-                                raise ValueError
-                            ctl.do_add_vip(name.strip(), steam_id)
-                            count += 1
-                        except UnicodeDecodeError:
-                            message = "File encoding is not supported. Must use UTF8"
-                            break
-                        except ValueError:
-                            message += f"Line: '{l}' is invalid, skipped\n"
-                        except CommandFailedError:
-                            message = "The game serveur returned an error while adding a VIP. You need to upload again"
-                            break
-
-                    message += f"{count} added"
-        else:
-            message = "The form is not valid. Fix the following error:"
-    else:
-        form = DocumentForm()  # An empty, unbound form
-
-    # Render list page with the documents and the form
-    context = {"form": form, "message": message}
-    return render(request, "list.html", context)
-
-
-@csrf_exempt
-@login_required(True)
-@record_audit
-def async_upload_vips(request):
     errors = []
-    send_to_discord_audit("upload_vips", request.user.username)
+    send_to_discord_audit(
+        message="upload_vips", command_name="upload_vips", by=request.user.username
+    )
     # Handle file upload
     vips = []
     if request.method == "POST":
         for name, data in request.FILES.items():
-            for line in data:
+            for idx, line in enumerate(data):
+                idx += 1
                 expiration_timestamp = None
                 try:
                     line = line.decode()
                     if not line:
                         continue
 
-                    steam_id, *name_chunks, possible_timestamp = line.strip().split()
+                    player_id, *name_chunks, possible_timestamp = line.strip().split()
                     # No possible time stamp if name_chunks is empty (only a 2 element list)
                     if not name_chunks:
                         name = possible_timestamp
@@ -106,27 +65,29 @@ def async_upload_vips(request):
                             expiration_timestamp = parser.parse(possible_timestamp)
                         except:
                             logger.warning(
-                                f"Unable to parse {possible_timestamp=} for {name=} {steam_id=}"
+                                f"#{idx} Unable to parse {possible_timestamp=} for {name=} {player_id=}"
                             )
                             # The last chunk should be treated as part of the players name if it's not a valid date
                             name += possible_timestamp
 
-                    if len(steam_id) != 17:
+                    if not is_steam_id_64(player_id) and not is_windows_store_id(
+                        player_id
+                    ):
                         errors.append(
-                            f"{line} has an invalid steam id, expected length of 17"
+                            f"#{idx} {line} has an invalid player ID: `{player_id}`, expected a 17 digit steam id or a windows store id. {is_steam_id_64(player_id)=} {is_windows_store_id(player_id)=}"
                         )
                         continue
                     if not name:
                         errors.append(
-                            f"{line} doesn't have a name attached to the steamid"
+                            f"#{idx}  {line} doesn't have a name attached to the player ID"
                         )
                         continue
-                    vips.append((name, steam_id, expiration_timestamp))
+                    vips.append((name, player_id, expiration_timestamp))
                 except UnicodeDecodeError:
                     errors.append("File encoding is not supported. Must use UTF8")
                     break
                 except Exception as e:
-                    errors.append(f"Error on line {line} {repr(2)}")
+                    errors.append(f"#{idx} Error on line {line}: {e}")
     else:
         return api_response(error="Bad method", status_code=400)
 
@@ -142,24 +103,28 @@ def async_upload_vips(request):
         result="Job submitted, will take several minutes",
         failed=bool(errors),
         error="\n".join(errors),
-        command="async_upload_vips",
+        command="upload_vips",
     )
 
 
 @csrf_exempt
-@login_required(True)
-def async_upload_vips_result(request):
+@login_required()
+@permission_required("api.can_upload_vip_list", raise_exception=True)
+@require_http_methods(["GET"])
+def upload_vips_result(request):
     return api_response(
         result=get_job_results(f"upload_vip_{os.getenv('SERVER_NUMBER')}"),
         failed=False,
-        command="async_upload_vips_result",
+        command="upload_vips_result",
     )
 
 
 @csrf_exempt
-@login_required(True)
+@login_required()
+@permission_required("api.can_download_vip_list", raise_exception=True)
+@require_http_methods(["GET"])
 def download_vips(request):
-    vips = ctl.get_vip_ids()
+    vips = rcon_api.get_vip_ids()
     vip_lines: List[str]
 
     # Treating anyone without an explicit expiration date as having indefinite VIP access
@@ -168,16 +133,16 @@ def download_vips(request):
     )
     with enter_session() as session:
         players = (
-            session.query(PlayerSteamID)
+            session.query(PlayerID)
             .join(PlayerVIP)
             .filter(PlayerVIP.server_number == get_server_number())
             .all()
         )
         for player in players:
-            expiration_lookup[player.steam_id_64] = player.vip.expiration
+            expiration_lookup[player.player_id] = player.vip.expiration
 
     vip_lines = [
-        f"{vip['steam_id_64']} {vip['name']} {expiration_lookup[vip['steam_id_64']].isoformat()}"
+        f"{vip['player_id']} {vip['name']} {expiration_lookup[vip['player_id']].isoformat()}"
         for vip in vips
     ]
 
@@ -186,63 +151,7 @@ def download_vips(request):
         content_type="text/plain",
     )
 
-    response[
-        "Content-Disposition"
-    ] = f"attachment; filename={datetime.datetime.now().isoformat()}_vips.txt"
+    response["Content-Disposition"] = (
+        f"attachment; filename={datetime.datetime.now().isoformat()}_vips.txt"
+    )
     return response
-
-
-def _get_real_vip_config():
-    config = RealVipConfig()
-    return {
-        "enabled": config.get_enabled(),
-        "desired_total_number_vips": config.get_desired_total_number_vips(),
-        "minimum_number_vip_slot": config.get_minimum_number_vip_slot(),
-    }
-
-
-@csrf_exempt
-@login_required(True)
-def get_real_vip_config(request):
-    error = None
-    try:
-        real_vip_config = _get_real_vip_config()
-    except Exception as e:
-        error = repr(e)
-    return api_response(
-        result=real_vip_config,
-        failed=bool(error),
-        error=error,
-        command="get_real_vip_config",
-    )
-
-
-@csrf_exempt
-@login_required(True)
-@record_audit
-def set_real_vip_config(request):
-    error = None
-    data = _get_data(request)
-    try:
-        config = RealVipConfig()
-        real_vip_config = {
-            "enabled": (bool, config.set_enabled),
-            "desired_total_number_vips": (int, config.set_desired_total_number_vips),
-            "minimum_number_vip_slot": (int, config.set_minimum_number_vip_slot),
-        }
-        for k, v in data.items():
-            if k in real_vip_config:
-                cast, setter = real_vip_config[k]
-                send_to_discord_audit(
-                    f"RealVIP set {dict_to_discord({k: v})}", request.user.username
-                )
-                setter(cast(v))
-    except Exception as e:
-        logger.exception("Failed to set realvip config")
-        error = repr(e)
-    return api_response(
-        result=_get_real_vip_config(),
-        failed=bool(error),
-        error=error,
-        command="get_real_vip_config",
-    )

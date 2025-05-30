@@ -4,14 +4,20 @@ import threading
 import time
 from contextlib import contextmanager, nullcontext
 from functools import wraps
-from typing import List, TypedDict
+from typing import Generator, List, Sequence
 
-from rcon.config import get_config
 from rcon.connection import HLLConnection
-from rcon.models import AdvancedConfigOptions
+from rcon.types import ServerInfoType, VipId
 from rcon.utils import exception_in_chain
 
 logger = logging.getLogger(__name__)
+
+SUCCESS = "SUCCESS"
+
+
+def convert_tabs_to_spaces(value: str) -> str:
+    """Convert tabs to a space to not break HLL tab delimited lists"""
+    return value.replace("\t", " ")
 
 
 def escape_string(s):
@@ -52,11 +58,6 @@ class HLLServerError(Exception):
 
 class BrokenHllConnection(Exception):
     pass
-
-
-class VipId(TypedDict):
-    steam_id_64: str
-    name: str
 
 
 def _auto_retry(method):
@@ -101,34 +102,11 @@ class ServerCtl:
     set password not implemented on purpose
     """
 
-    def __init__(self, config, auto_retry=1, max_open=None, max_idle=None):
-        rcon_config = get_config()
-        advanced_settings = None
-        try:
-            advanced_settings = AdvancedConfigOptions(
-                **rcon_config["ADVANCED_CRCON_SETTINGS"]
-            )
-        except ValueError as e:
-            # This might look dumb but pydantic provides useful error messages in the
-            # stack trace and we don't have to remember to keep updating this if we add
-            # any more fields to the ADVANCED_CRCON_SETTINGS config
-            logger.exception(e)
-
-        if max_open is not None:
-            self.maxOpen = max_open
-        elif advanced_settings is not None:
-            self.maxOpen = advanced_settings.thread_pool_size
-        else:
-            self.maxOpen = 20
-
-        if max_idle is not None:
-            self.maxIdle = max_idle
-        elif advanced_settings is not None:
-            self.maxIdle = advanced_settings.thread_pool_size
-        else:
-            self.maxIdle = 20
-
-        # .env fed config from rcon.SERVER_INFO
+    def __init__(
+        self, config: ServerInfoType, auto_retry=1, max_open=20, max_idle=20
+    ) -> None:
+        self.maxOpen: int = max_open
+        self.maxIdle: int = max_idle
         self.config = config
         self.auto_retry = auto_retry
         self.mu = threading.Lock()
@@ -136,7 +114,7 @@ class ServerCtl:
         self.numOpen = 0
 
     @contextmanager
-    def with_connection(self) -> HLLConnection:
+    def with_connection(self) -> Generator[HLLConnection, None, None]:
         logger.debug("Waiting to acquire lock %s", threading.get_ident())
         if not self.mu.acquire(timeout=30):
             raise TimeoutError()
@@ -235,7 +213,7 @@ class ServerCtl:
         if ex is not None:
             raise ex
 
-    def _connect(self, conn: HLLConnection):
+    def _connect(self, conn: HLLConnection) -> None:
         try:
             conn.connect(
                 self.config["host"], int(self.config["port"]), self.config["password"]
@@ -244,15 +222,36 @@ class ServerCtl:
             logger.exception("Invalid connection information", e)
             raise
 
+    @staticmethod
+    def _ends_on_complete_code_point(byte_chunk: bytes) -> bool:
+        """Return if byte_chunk ends on a valid UTF-8 code point"""
+        finalBytes = byte_chunk[-4:]
+        numBytesLeft = len(finalBytes)
+
+        for b in finalBytes:
+            numBytesLeft -= 1
+            if b < 0b10000000:
+                # First bit is 0, means we have a 1-byte char
+                # Will be most common so most efficient to check this case first
+                continue
+            if (
+                (b >= 0b11110000 and numBytesLeft < 3)
+                or (b >= 0b11100000 and numBytesLeft < 2)
+                or (b >= 0b11000000 and numBytesLeft < 1)
+            ):
+                # Need to receive another chunk
+                return False
+
+        return True
+
     @_auto_retry
-    def _request(
+    def _bytes_request(
         self,
         command: str,
         can_fail=True,
         log_info=False,
-        decode=True,
-        conn: HLLConnection = None,
-    ):
+        conn: HLLConnection | None = None,
+    ) -> bytes:
         if conn is None:
             raise ValueError("conn parameter should never be None")
         if log_info:
@@ -261,10 +260,12 @@ class ServerCtl:
             logger.debug(command)
         try:
             conn.send(command.encode())
-            if decode:
-                result = conn.receive().decode()
-            else:
-                result = conn.receive()
+            byte_chunks: list[bytes] = []
+            result: bytes = conn.receive()
+            byte_chunks.append(result)
+            while not self._ends_on_complete_code_point(byte_chunks[-1]):
+                result: bytes = conn.receive()
+                byte_chunks.append(result)
         except (
             RuntimeError,
             UnicodeDecodeError,
@@ -272,7 +273,9 @@ class ServerCtl:
             logger.exception("Failed request")
             raise HLLServerError(command) from e
 
-        if (decode and result == "FAIL") or (not decode and result == b"FAIL"):
+        result = b"".join(byte_chunks)
+
+        if result == b"FAIL":
             if can_fail:
                 raise CommandFailedError(command)
             else:
@@ -281,9 +284,13 @@ class ServerCtl:
         return result
 
     @_auto_retry
-    def _timed_request(
-        self, command: str, can_fail=True, log_info=False, conn: HLLConnection = None
-    ):
+    def _str_request(
+        self,
+        command: str,
+        can_fail=True,
+        log_info=False,
+        conn: HLLConnection | None = None,
+    ) -> str:
         if conn is None:
             raise ValueError("conn parameter should never be None")
         if log_info:
@@ -291,34 +298,32 @@ class ServerCtl:
         else:
             logger.debug(command)
         try:
-            before_sent, after_sent, _ = conn.send(command.encode(), timed=True)
-            before_received, after_received, result = conn.receive(timed=True)
-            result = result.decode()
+            conn.send(command.encode())
+            byte_chunks: list[bytes] = []
+            result: bytes = conn.receive()
+            byte_chunks.append(result)
+            while not self._ends_on_complete_code_point(byte_chunks[-1]):
+                result: bytes = conn.receive()
+                byte_chunks.append(result)
         except (
             RuntimeError,
-            BrokenPipeError,
-            socket.timeout,
-            ConnectionResetError,
             UnicodeDecodeError,
         ) as e:
             logger.exception("Failed request")
             raise HLLServerError(command) from e
 
-        if result == "FAIL":
+        result = b"".join(byte_chunks)
+        decoded_result = result.decode()
+
+        if decoded_result == "FAIL":
             if can_fail:
                 raise CommandFailedError(command)
             else:
                 raise HLLServerError(f"Got FAIL for {command}")
 
-        return dict(
-            before_sent=before_sent,
-            after_sent=after_sent,
-            before_received=before_received,
-            after_received=after_received,
-            result=result,
-        )
+        return decoded_result
 
-    def _read_list(self, raw, conn: HLLConnection):
+    def _read_list(self, raw: bytes, conn: HLLConnection) -> list[str]:
         res = raw.split(b"\t")
 
         try:
@@ -360,43 +365,59 @@ class ServerCtl:
         return [l.decode() for l in res[1:]]
 
     @_auto_retry
-    def _get(self, item, is_list=False, can_fail=True, conn: HLLConnection = None):
+    def _get_list(
+        self,
+        item: str,
+        can_fail=True,
+        conn: HLLConnection | None = None,
+        fail_msgs: Sequence[str] = [],
+    ) -> list[str]:
         if conn is None:
             raise ValueError("conn parameter should never be None")
-        res = self._request(f"get {item}", can_fail, decode=not is_list, conn=conn)
 
-        if not is_list:
-            return res
+        res = self._bytes_request(item, can_fail=can_fail, conn=conn)
+
+        # Some commands do not return "FAIL" when they fail. Normally we can handle them in the command implementation,
+        # but not with lists, where we need to do it here.
+        try:
+            decoded_res = res.decode()
+        except UnicodeDecodeError:
+            pass
+        else:
+            if decoded_res in fail_msgs:
+                if can_fail:
+                    raise CommandFailedError(decoded_res)
+                else:
+                    raise HLLServerError(f"Got FAIL for {item}: {decoded_res}")
 
         return self._read_list(res, conn)
 
-    def get_profanities(self):
-        return self._get("profanity", is_list=True, can_fail=False)
+    def get_profanities(self) -> list[str]:
+        return self._get_list("get profanity", can_fail=False)
 
-    def do_ban_profanities(self, profanities_csv):
-        return self._request(f"BanProfanity {profanities_csv}")
+    def ban_profanities(self, profanities: str) -> bool:
+        profanities = convert_tabs_to_spaces(profanities)
+        return self._str_request(f"BanProfanity {profanities}") == SUCCESS
 
-    def do_unban_profanities(self, profanities_csv):
-        return self._request(f"UnbanProfanity {profanities_csv}")
+    def unban_profanities(self, profanities: str) -> bool:
+        return self._str_request(f"UnbanProfanity {profanities}") == SUCCESS
 
-    def get_name(self):
-        return self._get("name", can_fail=False)
+    def get_name(self) -> str:
+        return self._str_request("get name", can_fail=False)
 
-    def get_map(self):
-        # server adds a _RESTART suffix after the name when the map is
-        # loading
-        return self._get("map", can_fail=False)
+    def get_map(self) -> str:
+        return self._str_request("get map", can_fail=False)
 
-    def get_maps(self):
-        return sorted(self._get("mapsforrotation", True, can_fail=False))
+    def get_maps(self) -> list[str]:
+        return sorted(self._get_list("get mapsforrotation", can_fail=False))
 
-    def get_players(self):
-        return self._get("players", True, can_fail=False)
+    def get_players(self) -> list[str]:
+        return self._get_list("get players", can_fail=False)
 
-    def get_playerids(self):
-        return self._get("playerids", True, can_fail=False)
+    def get_playerids(self) -> list[str]:
+        return self._get_list("get playerids", can_fail=False)
 
-    def _is_info_correct(self, player, raw_data):
+    def _is_info_correct(self, player, raw_data) -> bool:
         try:
             lines = raw_data.split("\n")
             return lines[0] == f"Name: {player}"
@@ -404,79 +425,92 @@ class ServerCtl:
             logger.exception("Bad playerinfo data")
             return False
 
-    def get_player_info(self, player, can_fail=True):
-        data = self._request(f"playerinfo {player}", can_fail=can_fail)
-        if not self._is_info_correct(player, data):
-            data = self._request(f"playerinfo {player}", can_fail=can_fail)
-        if not self._is_info_correct(player, data):
+    def get_player_info(self, player_name: str, can_fail=True) -> str:
+        data = self._str_request(f"playerinfo {player_name}", can_fail=can_fail)
+        if not self._is_info_correct(player_name, data):
+            data = self._str_request(f"playerinfo {player_name}", can_fail=can_fail)
+        if not self._is_info_correct(player_name, data):
             raise BrokenHllConnection() from CommandFailedError(
                 "The game server is returning the wrong player info for %s we got %s",
-                player,
+                player_name,
                 data,
             )
         return data
 
-    def get_admin_ids(self):
-        return self._get("adminids", True, can_fail=False)
+    def get_admin_ids(self) -> list[str]:
+        return self._get_list("get adminids", can_fail=False)
 
-    def get_temp_bans(self):
-        return self._get("tempbans", True, can_fail=False)
+    def get_temp_bans(self) -> list[str]:
+        return self._get_list("get tempbans", can_fail=False)
 
-    def get_perma_bans(self):
-        return self._get("permabans", True, can_fail=False)
+    def get_perma_bans(self) -> list[str]:
+        return self._get_list("get permabans", can_fail=False)
 
-    def get_team_switch_cooldown(self):
-        return self._get("teamswitchcooldown", can_fail=False)
+    def get_team_switch_cooldown(self) -> str:
+        return self._str_request("get teamswitchcooldown", can_fail=False)
 
-    def get_autobalance_threshold(self):
-        return self._get("autobalancethreshold", can_fail=False)
+    def get_autobalance_threshold(self) -> str:
+        return self._str_request("get autobalancethreshold", can_fail=False)
 
-    def get_votekick_enabled(self):
-        return self._get("votekickenabled", can_fail=False)
+    def get_votekick_enabled(self) -> str:
+        return self._str_request("get votekickenabled", can_fail=False)
 
-    def get_votekick_threshold(self):
-        return self._get("votekickthreshold", can_fail=False)
+    def get_votekick_thresholds(self) -> str:
+        return self._str_request("get votekickthreshold", can_fail=False)
 
-    def get_map_rotation(self):
-        return self._request("rotlist", can_fail=False).split("\n")[:-1]
+    def get_map_rotation(self) -> list[str]:
+        return self._str_request("rotlist", can_fail=False).split("\n")[:-1]
 
-    def get_slots(self):
-        return self._get("slots", can_fail=False)
+    def get_slots(self) -> str:
+        return self._str_request("get slots", can_fail=False)
 
-    def get_vip_ids(self) -> List[VipId]:
+    def get_vip_ids(self) -> list[VipId]:
         with self.with_connection() as conn:
-            res = self._get("vipids", True, can_fail=False, conn=conn)
+            res = self._get_list("get vipids", can_fail=False, conn=conn)
 
             vip_ids: List[VipId] = []
             for item in res:
                 try:
-                    steam_id_64, name = item.split(" ", 1)
+                    player_id, name = item.split(" ", 1)
                     name = name.replace('"', "")
                     name = name.replace("\n", "")
                     name = name.strip()
-                    vip_ids.append(dict(steam_id_64=steam_id_64, name=name))
+                    vip_ids.append({"player_id": player_id, "name": name})
                 except ValueError as e:
                     raise BrokenHllConnection() from e
             return vip_ids
 
-    def get_admin_groups(self):
-        return self._get("admingroups", True, can_fail=False)
+    def get_admin_groups(self) -> list[str]:
+        return self._get_list("get admingroups", can_fail=False)
 
-    def get_autobalance_enabled(self):
-        return self._get("autobalanceenabled", can_fail=False)
+    def get_autobalance_enabled(self) -> str:
+        return self._str_request("get autobalanceenabled", can_fail=False)
 
     @_auto_retry
-    def get_logs(self, since_min_ago, filter_="", conn: HLLConnection = None):
+    def get_logs(
+        self,
+        since_min_ago: str | int,
+        filter_: str = "",
+        conn: HLLConnection | None = None,
+    ) -> str:
         if conn is None:
             raise ValueError("conn parameter should never be None")
-        res = self._request(f"showlog {since_min_ago}", conn=conn)
+        res = self._str_request(f"showlog {since_min_ago}", conn=conn)
         if res == "EMPTY":
             return ""
         for i in range(30):
             if res[-1] == "\n":
                 break
             try:
-                res += conn.receive().decode()
+                # res *should* already be a decodable byte chunk because of how _request works
+                extra_chunks: list[bytes] = []
+                next_chunk: bytes = conn.receive()
+                extra_chunks.append(next_chunk)
+                while not self._ends_on_complete_code_point(extra_chunks[-1]):
+                    next_chunk: bytes = conn.receive()
+                    extra_chunks.append(next_chunk)
+
+                res += b"".join(extra_chunks).decode()
             except (
                 RuntimeError,
                 BrokenPipeError,
@@ -489,173 +523,208 @@ class ServerCtl:
 
         return res
 
-    def get_timed_logs(self, since_min_ago, filter_=""):
-        with self.with_connection() as conn:
-            res = self._timed_request(f"showlog {since_min_ago}", conn=conn)
-            for i in range(30):
-                if res["result"][-1] == "\n":
-                    break
-                res["result"] += conn.receive().decode()
-            return res
+    def get_idle_autokick_time(self) -> str:
+        return self._str_request("get idletime", can_fail=False)
 
-    def get_idle_autokick_time(self):
-        return self._get("idletime", can_fail=False)
+    def get_max_ping_autokick(self) -> str:
+        return self._str_request("get highping", can_fail=False)
 
-    def get_max_ping_autokick(self):
-        return self._get("highping", can_fail=False)
+    def get_queue_length(self) -> str:
+        return self._str_request("get maxqueuedplayers", can_fail=False)
 
-    def get_queue_length(self):
-        return self._get("maxqueuedplayers", can_fail=False)
+    def get_vip_slots_num(self) -> str:
+        return self._str_request("get numvipslots", can_fail=False)
 
-    def get_vip_slots_num(self):
-        return self._get("numvipslots", can_fail=False)
-
-    def set_autobalance_enabled(self, bool_str):
+    def set_autobalance_enabled(self, value: str) -> bool:
         """
         String bool is on / off
         """
-        return self._request(f"setautobalanceenabled {bool_str}")
+        return self._str_request(f"setautobalanceenabled {value}") == SUCCESS
 
-    def set_welcome_message(self, msg):
-        return self._request(f"say {msg}", log_info=True, can_fail=False)
+    def set_welcome_message(self, message) -> str:
+        return self._str_request(f"say {message}", log_info=True, can_fail=False)
 
-    def set_map(self, map_name):
-        return self._request(f"map {map_name}", log_info=True)
+    def set_map(self, map_name: str) -> str:
+        return self._str_request(f"map {map_name}", log_info=True)
 
-    def get_current_map_sequence(self):
-        return self._request("listcurrentmapsequence").split("\n")[:-1]
+    def get_current_map_sequence(self) -> list[str]:
+        return self._str_request("listcurrentmapsequence").split("\n")[:-1]
 
-    def get_map_shuffle_enabled(self):
-        return self._request("querymapshuffle").endswith('TRUE')
+    def get_map_shuffle_enabled(self) -> bool:
+        return self._str_request("querymapshuffle").endswith("TRUE")
 
-    def set_map_shuffle_enabled(self, enabled: bool):
+    def set_map_shuffle_enabled(self, enabled: bool) -> None:
         current = self.get_map_shuffle_enabled()
         if current != enabled:
-            self._request(f"togglemapshuffle")
+            self._str_request(f"togglemapshuffle")
 
-    def set_idle_autokick_time(self, minutes):
-        return self._request(f"setkickidletime {minutes}", log_info=True)
+    def set_idle_autokick_time(self, minutes) -> bool:
+        return self._str_request(f"setkickidletime {minutes}", log_info=True) == SUCCESS
 
-    def set_max_ping_autokick(self, max_ms):
-        return self._request(f"sethighping {max_ms}", log_info=True)
+    def set_max_ping_autokick(self, max_ms) -> bool:
+        return self._str_request(f"sethighping {max_ms}", log_info=True) == SUCCESS
 
     def set_autobalance_threshold(self, max_diff: int):
-        return self._request(f"setautobalancethreshold {max_diff}", log_info=True)
+        return (
+            self._str_request(f"setautobalancethreshold {max_diff}", log_info=True)
+            == SUCCESS
+        )
 
-    def set_team_switch_cooldown(self, minutes):
-        return self._request(f"setteamswitchcooldown {minutes}", log_info=True)
+    def set_team_switch_cooldown(self, minutes: int) -> bool:
+        return (
+            self._str_request(f"setteamswitchcooldown {minutes}", log_info=True)
+            == SUCCESS
+        )
 
-    def set_queue_length(self, num):
-        return self._request(f"setmaxqueuedplayers {num}", log_info=True)
+    def set_queue_length(self, value: int) -> bool:
+        return (
+            self._str_request(f"setmaxqueuedplayers {value}", log_info=True) == SUCCESS
+        )
 
-    def set_vip_slots_num(self, num):
-        return self._request(f"setnumvipslots {num}", log_info=True)
+    def set_vip_slots_num(self, value: int) -> bool:
+        return self._str_request(f"setnumvipslots {value}", log_info=True) == SUCCESS
 
     @_escape_params
-    def set_broadcast(self, msg):
-        return self._request(f'broadcast "{msg}"', log_info=True, can_fail=False)
+    def set_broadcast(self, message: str):
+        return self._str_request(
+            f'broadcast "{message}"', log_info=True, can_fail=False
+        )
 
-    def set_votekick_enabled(self, bool_str):
+    def set_votekick_enabled(self, value: str) -> bool:
         """
         String bool is on / off
         """
-        return self._request(f"setvotekickenabled {bool_str}")
+        return self._str_request(f"setvotekickenabled {value}") == SUCCESS
 
-    def set_votekick_threshold(self, threshold_pairs_str):
+    def set_votekick_thresholds(self, threshold_pairs: str) -> str:
         """
         PlayerCount,Threshold[,PlayerCount,Threshold,...]
         """
-        return self._request(f"setvotekickthreshold {threshold_pairs_str}")
+        return self._str_request(f"setvotekickthreshold {threshold_pairs}")
 
-    def do_reset_votekick_threshold(self):
-        return self._request(f"resetvotekickthreshold", log_info=True)
+    def reset_votekick_thresholds(self) -> bool:
+        return self._str_request(f"resetvotekickthreshold", log_info=True) == SUCCESS
 
-    def do_switch_player_on_death(self, player):
-        return self._request(f"switchteamondeath {player}", log_info=True)
+    def switch_player_on_death(self, player_name) -> bool:
+        return (
+            self._str_request(f"switchteamondeath {player_name}", log_info=True)
+            == SUCCESS
+        )
 
-    def do_switch_player_now(self, player):
-        return self._request(f"switchteamnow {player}", log_info=True)
+    def switch_player_now(self, player_name: str) -> bool:
+        return (
+            self._str_request(f"switchteamnow {player_name}", log_info=True) == SUCCESS
+        )
 
-    def do_add_map_to_rotation(
+    def add_map_to_rotation(
         self,
         map_name: str,
         after_map_name: str,
-        after_map_name_number: int = None,
-    ):
-        cmd = f"rotadd /Game/Maps/{map_name} /Game/Maps/{after_map_name}"
+        after_map_name_number: int | None = None,
+    ) -> str:
+        cmd = f"rotadd {map_name} {after_map_name}"
         if after_map_name_number:
             cmd = f"{cmd} {after_map_name_number}"
 
-        return self._request(cmd, can_fail=False, log_info=True)
+        return self._str_request(cmd, can_fail=False, log_info=True)
 
-    def do_remove_map_from_rotation(self, map_name, map_number: int = None):
-        cmd = f"rotdel /Game/Maps/{map_name}"
+    def remove_map_from_rotation(
+        self, map_name: str, map_number: int | None = None
+    ) -> str:
+        cmd = f"rotdel {map_name}"
         if map_number:
             cmd = f"{cmd} {map_number}"
 
-        return self._request(cmd, can_fail=False, log_info=True)
+        return self._str_request(cmd, can_fail=False, log_info=True)
 
     @_escape_params
-    def do_punish(self, player, reason):
-        return self._request(f'punish "{player}" "{reason}"', log_info=True)
+    def punish(self, player_name: str, reason: str) -> bool:
+        return (
+            self._str_request(f'punish "{player_name}" "{reason}"', log_info=True)
+            == SUCCESS
+        )
 
     @_escape_params
-    def do_kick(self, player, reason):
-        return self._request(f'kick "{player}" "{reason}"', log_info=True)
+    def kick(self, player_name: str, reason: str) -> bool:
+        return (
+            self._str_request(f'kick "{player_name}" "{reason}"', log_info=True)
+            == SUCCESS
+        )
 
     @_escape_params
-    def do_temp_ban(
+    def temp_ban(
         self,
-        player_name=None,
-        steam_id_64=None,
-        duration_hours=2,
-        reason="",
-        admin_name="",
-    ):
-        return self._request(
-            f'tempban "{steam_id_64 or player_name}" {duration_hours} "{reason}" "{admin_name}"',
+        player_name: str | None = None,
+        player_id: str | None = None,
+        duration_hours: int = 2,
+        reason: str = "",
+        admin_name: str = "",
+    ) -> bool:
+        reason = convert_tabs_to_spaces(reason)
+        return (
+            self._str_request(
+                f'tempban "{player_id or player_name}" {duration_hours} "{reason}" "{admin_name}"',
+                log_info=True,
+            )
+            == SUCCESS
+        )
+
+    @_escape_params
+    def perma_ban(
+        self,
+        player_name: str | None = None,
+        player_id: str | None = None,
+        reason: str = "",
+        admin_name: str = "",
+    ) -> bool:
+        reason = convert_tabs_to_spaces(reason)
+        return (
+            self._str_request(
+                f'permaban "{player_id or player_name}" "{reason}" "{admin_name}"',
+                log_info=True,
+            )
+            == SUCCESS
+        )
+
+    def remove_temp_ban(self, player_id: str) -> bool:
+        return self._str_request(f"pardontempban {player_id}", log_info=True) == SUCCESS
+
+    def remove_perma_ban(self, player_id: str) -> bool:
+        return (
+            self._str_request(f"pardonpermaban {player_id}", log_info=True) == SUCCESS
+        )
+
+    @_escape_params
+    def add_admin(self, player_id, role, description) -> bool:
+        description = convert_tabs_to_spaces(description)
+        res = self._str_request(
+            f'adminadd "{player_id}" "{role}" "{description}"', log_info=True
+        )
+
+        return res == SUCCESS
+
+    def remove_admin(self, player_id) -> bool:
+        return self._str_request(f"admindel {player_id}", log_info=True) == SUCCESS
+
+    @_escape_params
+    def add_vip(self, player_id: str, description: str) -> bool:
+        description = convert_tabs_to_spaces(description)
+        return (
+            self._str_request(f'vipadd {player_id} "{description}"', log_info=True)
+            == SUCCESS
+        )
+
+    def remove_vip(self, player_id) -> bool:
+        return self._str_request(f"vipdel {player_id}", log_info=True) == SUCCESS
+
+    @_escape_params
+    def message_player(self, player_name=None, player_id=None, message="") -> str:
+        return self._str_request(
+            f'message "{player_id or player_name}" {message}',
             log_info=True,
         )
 
-    @_escape_params
-    def do_perma_ban(
-        self, player_name=None, steam_id_64=None, reason="", admin_name=""
-    ):
-        return self._request(
-            f'permaban "{steam_id_64 or player_name}" "{reason}" "{admin_name}"',
-            log_info=True,
-        )
-
-    def do_remove_temp_ban(self, ban_log):
-        return self._request(f"pardontempban {ban_log}", log_info=True)
-
-    def do_remove_perma_ban(self, ban_log):
-        return self._request(f"pardonpermaban {ban_log}", log_info=True)
-
-    @_escape_params
-    def do_add_admin(self, steam_id_64, role, name):
-        return self._request(
-            f'adminadd "{steam_id_64}" "{role}" "{name}"', log_info=True
-        )
-
-    def do_remove_admin(self, steam_id_64):
-        return self._request(f"admindel {steam_id_64}", log_info=True)
-
-    @_escape_params
-    def do_add_vip(self, steam_id_64, name):
-        return self._request(f'vipadd {steam_id_64} "{name}"', log_info=True)
-
-    def do_remove_vip(self, steam_id_64):
-        return self._request(f"vipdel {steam_id_64}", log_info=True)
-
-    @_escape_params
-    def do_message_player(self, player=None, steam_id_64=None, message=""):
-        return self._request(
-            f'message "{steam_id_64 or player}" {message}',
-            log_info=True,
-        )
-
-    def get_gamestate(self) -> List[str]:
+    def get_gamestate(self) -> list[str]:
         """
         Players: Allied: 0 - Axis: 1
         Score: Allied: 2 - Axis: 2
@@ -666,8 +735,32 @@ class ServerCtl:
         """
         # Has no trailing "\n"
 
-        result = self._get("gamestate", can_fail=False)
-        return result.split("\n")
+        return self._str_request("get gamestate", can_fail=False).split("\n")
+
+    def get_objective_row(self, row: int):
+        if not (0 <= row <= 4):
+            raise ValueError("Row must be between 0 and 4")
+
+        return self._get_list(
+            f"get objectiverow_{row}",
+            fail_msgs="Cannot execute command for this gamemode.",
+        )
+
+    def set_game_layout(self, objectives: Sequence[str]):
+        if len(objectives) != 5:
+            raise ValueError("5 objectives must be provided")
+        self._str_request(
+            f'gamelayout "{objectives[0]}" "{objectives[1]}" "{objectives[2]}" "{objectives[3]}" "{objectives[4]}"',
+            log_info=True,
+            can_fail=False,
+        )
+        return list(objectives)
+    
+    def get_game_mode(self):
+        """
+        Any of "IntenseWarfare", "OffensiveWarfare", or ???
+        """
+        return self._str_request("get gamemode", can_fail=False)
 
 
 if __name__ == "__main__":

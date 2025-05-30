@@ -1,16 +1,18 @@
 import os
-from functools import partial
+from http.client import CannotSendRequest
+from logging import getLogger
 from xmlrpc.client import Fault, ServerProxy
 
-from django.http import HttpResponse, JsonResponse
-from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 
 from rcon.discord import send_to_discord_audit
 
-from .audit_log import auto_record_audit, record_audit
+from .audit_log import record_audit
 from .auth import api_response, login_required
+from .decorators import permission_required, require_content_type, require_http_methods
 from .utils import _get_data
+
+logger = getLogger(__name__)
 
 supervisor_client = None
 
@@ -28,11 +30,14 @@ def get_supervisor_client():
 
 
 @csrf_exempt
-@login_required(True)
+@login_required()
+@permission_required("api.can_view_available_services", raise_exception=True)
+@require_http_methods(["GET"])
 def get_services(request):
     info = {
         "broadcasts": "The automatic broadcasts.",
         "log_event_loop": "Blacklist enforcement, chat/kill forwarding, player history, etc...",
+        "log_stream": "Optionally store game server logs in a redis stream",
         "auto_settings": "Applies commands automaticaly based on your rules.",
         "cron": "The scheduler, cleans logs and whatever you added.",
     }
@@ -54,13 +59,18 @@ def get_services(request):
 
 
 @csrf_exempt
-@login_required(True)
+@login_required()
+@permission_required("api.can_toggle_services", raise_exception=True)
 @record_audit
+@require_http_methods(["POST"])
+@require_content_type()
 def do_service(request):
     data = _get_data(request)
     client = get_supervisor_client()
     error = None
     res = None
+    command_name = "do_service"
+    failed = False
 
     actions = {
         "START": client.supervisor.startProcess,
@@ -70,16 +80,41 @@ def do_service(request):
     service_name = data.get("service_name")
 
     if not action or action.upper() not in actions:
-        return api_response(error="action must be START or STOP", status_code=400)
+        failed = True
+        return api_response(
+            command=command_name,
+            arguments=data,
+            failed=failed,
+            error="action must be START or STOP",
+            status_code=400,
+        )
     if not service_name:
-        return api_response(error="process_name must be set", status_code=400)
+        failed = True
+        return api_response(
+            command=command_name,
+            arguments=data,
+            failed=failed,
+            error="service_name must be set",
+            status_code=400,
+        )
 
     try:
         res = actions[action.upper()](service_name)
         send_to_discord_audit(
-            f"do_service {service_name} {action}", request.user.username
+            message=f"{service_name} {action}",
+            command_name=f"service {action}",
+            by=request.user.username,
         )
+    except CannotSendRequest as e:
+        error = "Service request already sent"
+        logger.info(f"{error=}")
     except Fault as e:
         error = repr(e)
 
-    return api_response(result=res, failed=bool(error), error=error)
+    return api_response(
+        command=command_name,
+        arguments=data,
+        failed=failed,
+        result=res,
+        error=error,
+    )

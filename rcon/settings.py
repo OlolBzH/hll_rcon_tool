@@ -1,11 +1,33 @@
-import logging
 import os
+import re
 import socket
 from logging.config import dictConfig
+from subprocess import PIPE, run
+
+from rcon.types import ServerInfoType
+from rcon.user_config.rcon_server_settings import RconServerSettingsUserConfig
+
+try:
+    TAG_VERSION = (
+        run(["git", "describe", "--tags"], stdout=PIPE, stderr=PIPE)
+        .stdout.decode()
+        .strip()
+    )
+except Exception:
+    TAG_VERSION = "unknown"
+
+try:
+    config = RconServerSettingsUserConfig.load_from_db()
+    ENVIRONMENT = re.sub("[^0-9a-zA-Z]+", "", (config.short_name or "default").strip())[
+        :64
+    ]
+except Exception:
+    ENVIRONMENT = "undefined"
 
 # TODO: Use a config style that is not required at import time
 
-SERVER_INFO = {
+
+SERVER_INFO: ServerInfoType = {
     "host": os.getenv("HLL_HOST"),
     "port": os.getenv("HLL_PORT"),
     "password": os.getenv("HLL_PASSWORD"),
@@ -28,7 +50,7 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {
         "console": {
-            "format": "[%(asctime)s][%(levelname)s] %(name)s "
+            "format": f"[%(asctime)s][%(levelname)s][{ENVIRONMENT}][{TAG_VERSION}] %(name)s "
             "%(filename)s:%(funcName)s:%(lineno)d | %(message)s",
         },
     },
@@ -59,10 +81,7 @@ LOGGING = {
             "level": os.getenv("LOGGING_LEVEL", "DEBUG"),
             "propagate": False,
         },
-        "rcon.extended_commands": {
-            "level": os.getenv("COMMANDS_LOGLEVEL", os.getenv("LOGGING_LEVEL", "INFO"))
-        },
-        "rcon.recorded_commands": {
+        "rcon.rcon": {
             "level": os.getenv("COMMANDS_LOGLEVEL", os.getenv("LOGGING_LEVEL", "INFO"))
         },
         "rcon.commands": {
